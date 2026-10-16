@@ -25,6 +25,42 @@
 #include "hook/hook_manager.h"
 #include "feature/kernel_umount.h"
 #include "compat/kernel_compat.h"
+#ifdef CONFIG_KSU_SUSFS
+#include <linux/susfs_def.h>
+#include "selinux/selinux.h"
+
+extern struct work_struct susfs_extra_works;
+
+static inline void ksu_handle_extra_susfs_work(void)
+{
+	if (work_pending(&susfs_extra_works))
+		return;
+
+	schedule_work(&susfs_extra_works);
+}
+
+/*
+ * Mark the freshly spawned process (zygote child) for susfs:
+ * - TIF_PROC_UMOUNTED makes sus_path/sus_mount/sus_map hiding effective for it.
+ * - TIF_PROC_NO_SU marks processes that must never look like a su process.
+ */
+static void ksu_handle_zygote_setresuid_susfs(uid_t new_uid, bool is_zygote_next)
+{
+	if (is_isolated_process(new_uid) ||
+	    (is_appuid(new_uid) && ksu_uid_should_umount(new_uid))) {
+		susfs_set_current_proc_no_su();
+		susfs_set_current_proc_umounted();
+		if (is_zygote_next)
+			susfs_set_current_proc_umounted_for_zygote_next();
+		ksu_handle_extra_susfs_work();
+		return;
+	}
+
+	/* Process is not umounted but root is not allowed for it either */
+	if (!ksu_is_allow_uid_for_current(new_uid))
+		susfs_set_current_proc_no_su();
+}
+#endif
 
 int ksu_handle_setresuid(uid_t old_uid, uid_t new_uid)
 {
@@ -71,6 +107,16 @@ int ksu_handle_setresuid(uid_t old_uid, uid_t new_uid)
 
     // Handle kernel umount
     ksu_handle_umount(old_uid, new_uid);
+
+#ifdef CONFIG_KSU_SUSFS
+    // Only zygote (and webview zygote) spawned processes inherit the ksu mounts
+    if (current_uid().val == 0) {
+        if (is_zygote(current_cred()))
+            ksu_handle_zygote_setresuid_susfs(new_uid, false);
+        else if (new_uid == WEBVIEW_ZYGOTE_UID)
+            ksu_handle_zygote_setresuid_susfs(new_uid, true);
+    }
+#endif
 
     return 0;
 }

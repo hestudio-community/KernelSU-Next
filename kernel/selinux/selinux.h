@@ -67,4 +67,9 @@ void escape_to_root_for_adb_root();
 
 extern u32 ksu_file_sid;
 
+#ifdef CONFIG_KSU_SUSFS
+bool susfs_is_current_ksu_domain(void);
+bool susfs_is_current_zygote_domain(void);
+#endif
+
 #endif
